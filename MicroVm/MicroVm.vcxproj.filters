@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="level1.c">
+    <ClCompile Include="main.c">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
   </ItemGroup>

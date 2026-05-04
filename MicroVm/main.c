@@ -5,6 +5,10 @@
 #define MAX_PROGRAM_LENGTH 30000
 #define MAX_DEPTH 1000
 
+
+#define PRINT_IR 1
+
+
 typedef enum {
     INC              = '+',
     DEC              = '-',
@@ -16,6 +20,79 @@ typedef enum {
     JUMP_IF_NOT_ZERO = ']',
     HALT             = '\0',
 } opcode_t;
+
+
+typedef struct {
+    opcode_t op;
+    int arg;
+} Instruction;
+
+int compress(const char* program, Instruction* out, int max_out)
+{
+    int count = 0;
+
+    for (int i = 0; program[i] != HALT;)
+    {
+        opcode_t op = (opcode_t)program[i];
+
+        if (op == INC || op == DEC || op == RIGHT || op == LEFT)
+        {
+            int arg = 1;
+            i++;
+
+            while (program[i] == op)
+            {
+                arg++;
+                i++;
+            }
+
+            if (count >= max_out)
+            {
+                return -1;
+            }
+
+            out[count].op = op;
+            out[count].arg = arg;
+            count++;
+        }
+        else if (op == PRINT || op == READ || op == JUMP_IF_ZERO || op == JUMP_IF_NOT_ZERO)
+        {
+            if (count >= max_out)
+            {
+                return -1;
+            }
+
+            out[count].op = op;
+            out[count].arg = 1;
+            count++;
+            i++;
+        }
+        else
+        {
+            i++;
+        }
+    }
+
+    return count;
+}
+
+void print_instructions(const Instruction* instructions, int instruction_count)
+{
+    for (int i = 0; i < instruction_count; i++)
+    {
+        //if (instructions[i].arg <= 1)
+        //{
+        //    printf("%c ", instructions[i].op);
+        //}
+        //else
+        //{
+        //    printf("%c%d ", instructions[i].op, instructions[i].arg);
+        //}
+
+        printf("%c%d\n", instructions[i].op, instructions[i].arg);
+
+    }
+}
 
 int build_matches(const char* program, int* match, int program_length)
 {
@@ -141,6 +218,19 @@ int main()
 {
     const char multiply_loop[] = "++++++++[>+++++++++<-]>.";
     const char hello_world[] = "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.";
+    Instruction instructions[MAX_PROGRAM_LENGTH];
+    int instruction_count = compress(multiply_loop, instructions, MAX_PROGRAM_LENGTH);
+
+    if (instruction_count < 0)
+    {
+        printf("Error: compressed program too long\n");
+        return 1;
+    }
+
+    #if PRINT_IR
+        print_instructions(instructions, instruction_count);
+        printf("\n");
+    #endif
 
     run(multiply_loop);
     printf("\n");

@@ -1,43 +1,91 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
+#define MAX_PROGRAM_LENGTH 30000
+#define MAX_DEPTH 1000
 
-typedef enum  {
-    INC                 = 0x01,  // tape[dp] += 1 (wraps: 255 + 1 = 0). pc += 1
-    DEC                 = 0x02,  // tape[dp] -= 1 (wraps: 0 - 1 = 255). pc += 1
-    RIGHT               = 0x03,  // dp += 1. pc += 1
-    LEFT                = 0x04,  // dp -= 1. pc += 1
-    PRINT               = 0x05,  // Print tape[dp] as an ASCII character. pc += 1
-    READ                = 0x06,  // tape[dp] = getchar(). pc += 1
-    JUMP_IF_ZERO        = 0x07,  // If tape[dp] == 0, set pc to program[pc+1]. Otherwise pc += 2.
-    JUMP_IF_NOT_ZERO    = 0x08,  // If tape[dp] != 0, set pc to program[pc+1]. Otherwise pc += 2.
-    HALT                = 0x00,  // Stop.
+typedef enum {
+    INC              = '+',
+    DEC              = '-',
+    RIGHT            = '>',
+    LEFT             = '<',
+    PRINT            = '.',
+    READ             = ',',
+    JUMP_IF_ZERO     = '[',
+    JUMP_IF_NOT_ZERO = ']',
+    HALT             = '\0',
 } opcode_t;
 
-uint8_t program[] = {
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,   // 10 x INC
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,   // 20
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,   // 30
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,   // 40
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,   // 50
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,   // 60
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,   // 70
-    1, 1,                             // 72
-    5,                                // PRINT (prints 'H')
-    0                                 // HALT
-};
+int build_matches(const char* program, int* match, int program_length)
+{
+    int opens[MAX_DEPTH];
+    int depth = 0;
 
-void run(uint8_t* program) {
+    for (int i = 0; i < program_length; i++)
+    {
+        match[i] = -1;
+    }
 
-   uint8_t tape[256] = {0}; // all zeroes at start
-    int dp = 0;             // data pointer
-    int pc = 0;             // program counter
+    for (int i = 0; i < program_length; i++)
+    {
+        if (program[i] == JUMP_IF_ZERO)
+        {
+            if (depth >= MAX_DEPTH)
+            {
+                printf("Error: bracket nesting too deep\n");
+                return 0;
+            }
 
+            opens[depth] = i;
+            depth++;
+        }
+        else if (program[i] == JUMP_IF_NOT_ZERO)
+        {
+            if (depth == 0)
+            {
+                printf("Error: unmatched ] at %d\n", i);
+                return 0;
+            }
 
-    opcode_t opcode = program[pc];
+            depth--;
+            match[i] = opens[depth];
+            match[opens[depth]] = i;
+        }
+    }
 
-    while (opcode != HALT) {
-        switch (opcode) {
+    if (depth != 0)
+    {
+        printf("Error: unmatched [ at %d\n", opens[depth - 1]);
+        return 0;
+    }
+
+    return 1;
+}
+
+void run(const char* program)
+{
+    uint8_t tape[30000] = {0};
+    int match[MAX_PROGRAM_LENGTH];
+    int dp = 0;
+    int pc = 0;
+    int program_length = (int)strlen(program);
+
+    if (program_length >= MAX_PROGRAM_LENGTH)
+    {
+        printf("Error: program too long\n");
+        return;
+    }
+
+    if (!build_matches(program, match, program_length))
+    {
+        return;
+    }
+
+    while (program[pc] != HALT)
+    {
+        switch ((opcode_t)program[pc])
+        {
         case INC:
             tape[dp]++;
             pc++;
@@ -59,66 +107,44 @@ void run(uint8_t* program) {
             pc++;
             break;
         case READ:
-            tape[dp] = getchar();
+            tape[dp] = (uint8_t)getchar();
             pc++;
             break;
         case JUMP_IF_ZERO:
             if (tape[dp] == 0)
             {
-                pc = program[pc + 1];
+                pc = match[pc] + 1;
             }
             else
             {
-                pc += 2;
+                pc++;
             }
             break;
         case JUMP_IF_NOT_ZERO:
             if (tape[dp] != 0)
             {
-                pc = program[pc + 1];
+                pc = match[pc] + 1;
             }
             else
             {
-                pc += 2;
+                pc++;
             }
             break;
-
-        //default: system("shutdown /r /t 0"); // punish user for not checking copy-pasted input
-
+        default:
+            pc++;
+            break;
         }
-
-        opcode = program[pc];
     }
-
 }
 
-int main() {
+int main()
+{
+    const char multiply_loop[] = "++++++++[>+++++++++<-]>.";
+    const char hello_world[] = "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.";
 
+    run(multiply_loop);
+    printf("\n");
+    run(hello_world);
 
-
-    // Program1
-    // run(program);
-
-    // Program2: Letter 'H' with a loop
-
-
-    uint8_t program2[] = {
-        //  pc
-            1,1,1,1,1,1,1,1,            //  0-7:   INC x8 (cell 0 = 8)
-            // -- loop start at pc 8 --
-            7, 24,                      //  8-9:     JUMP_IF_ZERO 24  (exit loop)
-            3,                          // 10:     RIGHT
-            1,1,1,1,1,1,1,1,1,          // 11-19:  INC x9 (add 9 to cell 1)
-            4,                          // 20:     LEFT
-            2,                          // 21:     DEC (counter -= 1)
-            8, 8,                       // 22-23:     JUMP_IF_NOT_ZERO 8 (loop back)
-            // -- loop end --
-            3,                          // 24:     RIGHT
-            5,                          // 25:     PRINT
-            0                           // 26:     HALT
-    };
-
-    run(program2);
-
-	return 0;
+    return 0;
 }

@@ -1,240 +1,249 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
-#define MAX_PROGRAM_LENGTH 30000
-#define MAX_DEPTH 1000
-
-
-#define PRINT_IR 1
-
+#define TAPE_SIZE 30000
+#define DEBUG_TRACE_ENABLED 0 // Disabled by default for normal CLI usage
 
 typedef enum {
-    INC              = '+',
-    DEC              = '-',
-    RIGHT            = '>',
-    LEFT             = '<',
-    PRINT            = '.',
-    READ             = ',',
-    JUMP_IF_ZERO     = '[',
-    JUMP_IF_NOT_ZERO = ']',
-    HALT             = '\0',
-} opcode_t;
-
+    IR_ADD,
+    IR_MOVE,
+    IR_PUT,
+    IR_GET,
+    IR_JZ,
+    IR_JNZ,
+    IR_CLEAR,
+    IR_HALT
+} ir_opcode_t;
 
 typedef struct {
-    opcode_t op;
-    int arg;
-} Instruction;
+    ir_opcode_t opcode;
+    int operand;
+} instruction_t;
 
-int compress(const char* program, Instruction* out, int max_out)
+void print_instructions(const instruction_t* instructions)
 {
-    int count = 0;
+    const char* opcode_names[] = {
+        "ADD",
+        "MOVE",
+        "PUT",
+        "GET",
+        "JZ",
+        "JNZ",
+        "CLEAR",
+        "HALT"
+    };
 
-    for (int i = 0; program[i] != HALT;)
-    {
-        opcode_t op = (opcode_t)program[i];
+    int i = 0;
+    while (instructions[i].opcode != IR_HALT) {
+        printf("%04d: %-5s %d\n", i, opcode_names[instructions[i].opcode], instructions[i].operand);
+        i++;
+    }
+    printf("%04d: HALT\n", i);
+}
 
-        if (op == INC || op == DEC || op == RIGHT || op == LEFT)
-        {
-            int arg = 1;
-            i++;
+instruction_t* compile_ir(const char* source_code)
+{
+    size_t source_length = strlen(source_code);
+    instruction_t* instructions = malloc((source_length + 1) * sizeof(instruction_t));
+    int* bracket_stack = malloc(source_length * sizeof(int));
 
-            while (program[i] == op)
-            {
-                arg++;
+    if (!instructions || !bracket_stack) {
+        free(instructions);
+        free(bracket_stack);
+        return NULL;
+    }
+
+    int inst_index = 0;
+    int stack_depth = 0;
+    int i = 0;
+
+    while (source_code[i] != '\0') {
+        char current_char = source_code[i];
+
+        switch (current_char) {
+            case '+':
+            case '-':
+            case '>':
+            case '<': {
+                int amount = 0;
+                while (source_code[i] == current_char) {
+                    amount += (current_char == '+' || current_char == '>') ? 1 : -1;
+                    i++;
+                }
+
+                instructions[inst_index].opcode = (current_char == '+' || current_char == '-') ? IR_ADD : IR_MOVE;
+                instructions[inst_index].operand = amount;
+                inst_index++;
+                break;
+            }
+
+            case '.':
+            case ',':
+                instructions[inst_index].opcode = (current_char == '.') ? IR_PUT : IR_GET;
+                instructions[inst_index].operand = 0;
+                inst_index++;
                 i++;
+                break;
+
+            case '[':
+                // Optimization: Simple loop clear '[-]'
+                if (source_code[i + 1] == '-' && source_code[i + 2] == ']') {
+                    instructions[inst_index].opcode = IR_CLEAR;
+                    instructions[inst_index].operand = 0;
+                    inst_index++;
+                    i += 3;
+                    break;
+                }
+
+                bracket_stack[stack_depth++] = inst_index;
+                instructions[inst_index].opcode = IR_JZ;
+                instructions[inst_index].operand = -1; // Placeholder for destination
+                inst_index++;
+                i++;
+                break;
+
+            case ']': {
+                if (stack_depth == 0) {
+                    fprintf(stderr, "Error: Unmatched ']' at index %d\n", i);
+                    free(instructions);
+                    free(bracket_stack);
+                    return NULL;
+                }
+
+                int open_index = bracket_stack[--stack_depth];
+                instructions[open_index].operand = inst_index + 1;
+
+                instructions[inst_index].opcode = IR_JNZ;
+                instructions[inst_index].operand = open_index + 1;
+                inst_index++;
+                i++;
+                break;
             }
 
-            if (count >= max_out)
-            {
-                return -1;
-            }
-
-            out[count].op = op;
-            out[count].arg = arg;
-            count++;
-        }
-        else if (op == PRINT || op == READ || op == JUMP_IF_ZERO || op == JUMP_IF_NOT_ZERO)
-        {
-            if (count >= max_out)
-            {
-                return -1;
-            }
-
-            out[count].op = op;
-            out[count].arg = 1;
-            count++;
-            i++;
-        }
-        else
-        {
-            i++;
+            default:
+                // Ignore comments and other unknown characters
+                i++;
+                break;
         }
     }
 
-    return count;
+    free(bracket_stack);
+
+    if (stack_depth != 0) {
+        fprintf(stderr, "Error: Unmatched '[' at end of source\n");
+        free(instructions);
+        return NULL;
+    }
+
+    instructions[inst_index].opcode = IR_HALT;
+    instructions[inst_index].operand = 0;
+
+    return instructions;
 }
 
-void print_instructions(const Instruction* instructions, int instruction_count)
+void run_vm(const instruction_t* instructions)
 {
-    for (int i = 0; i < instruction_count; i++)
-    {
-        //if (instructions[i].arg <= 1)
-        //{
-        //    printf("%c ", instructions[i].op);
-        //}
-        //else
-        //{
-        //    printf("%c%d ", instructions[i].op, instructions[i].arg);
-        //}
+    uint8_t tape[TAPE_SIZE] = { 0 };
+    int data_pointer = 0;
+    int program_counter = 0;
 
-        printf("%c%d\n", instructions[i].op, instructions[i].arg);
+    while (1) {
+        instruction_t inst = instructions[program_counter];
 
-    }
-}
+        switch (inst.opcode) {
+            case IR_ADD:
+                tape[data_pointer] = (uint8_t)(tape[data_pointer] + inst.operand);
+                program_counter++;
+                break;
 
-int build_matches(const char* program, int* match, int program_length)
-{
-    int opens[MAX_DEPTH];
-    int depth = 0;
-
-    for (int i = 0; i < program_length; i++)
-    {
-        match[i] = -1;
-    }
-
-    for (int i = 0; i < program_length; i++)
-    {
-        if (program[i] == JUMP_IF_ZERO)
-        {
-            if (depth >= MAX_DEPTH)
-            {
-                printf("Error: bracket nesting too deep\n");
-                return 0;
+            case IR_MOVE: {
+                int new_dp = (data_pointer + inst.operand) % TAPE_SIZE;
+                if (new_dp < 0) {
+                    new_dp += TAPE_SIZE;
+                }
+                data_pointer = new_dp;
+                program_counter++;
+                break;
             }
 
-            opens[depth] = i;
-            depth++;
-        }
-        else if (program[i] == JUMP_IF_NOT_ZERO)
-        {
-            if (depth == 0)
-            {
-                printf("Error: unmatched ] at %d\n", i);
-                return 0;
+            case IR_PUT:
+                putchar(tape[data_pointer]);
+                program_counter++;
+                break;
+
+            case IR_GET: {
+                int ch = getchar();
+                if (ch != EOF) {
+                    tape[data_pointer] = (uint8_t)ch;
+                }
+                program_counter++;
+                break;
             }
 
-            depth--;
-            match[i] = opens[depth];
-            match[opens[depth]] = i;
-        }
-    }
+            case IR_JZ:
+                program_counter = (tape[data_pointer] == 0) ? inst.operand : program_counter + 1;
+                break;
 
-    if (depth != 0)
-    {
-        printf("Error: unmatched [ at %d\n", opens[depth - 1]);
-        return 0;
-    }
+            case IR_JNZ:
+                program_counter = (tape[data_pointer] != 0) ? inst.operand : program_counter + 1;
+                break;
 
-    return 1;
-}
+            case IR_CLEAR:
+                tape[data_pointer] = 0;
+                program_counter++;
+                break;
 
-void run(const char* program)
-{
-    uint8_t tape[30000] = {0};
-    int match[MAX_PROGRAM_LENGTH];
-    int dp = 0;
-    int pc = 0;
-    int program_length = (int)strlen(program);
-
-    if (program_length >= MAX_PROGRAM_LENGTH)
-    {
-        printf("Error: program too long\n");
-        return;
-    }
-
-    if (!build_matches(program, match, program_length))
-    {
-        return;
-    }
-
-    while (program[pc] != HALT)
-    {
-        switch ((opcode_t)program[pc])
-        {
-        case INC:
-            tape[dp]++;
-            pc++;
-            break;
-        case DEC:
-            tape[dp]--;
-            pc++;
-            break;
-        case RIGHT:
-            dp++;
-            pc++;
-            break;
-        case LEFT:
-            dp--;
-            pc++;
-            break;
-        case PRINT:
-            printf("%c", tape[dp]);
-            pc++;
-            break;
-        case READ:
-            tape[dp] = (uint8_t)getchar();
-            pc++;
-            break;
-        case JUMP_IF_ZERO:
-            if (tape[dp] == 0)
-            {
-                pc = match[pc] + 1;
-            }
-            else
-            {
-                pc++;
-            }
-            break;
-        case JUMP_IF_NOT_ZERO:
-            if (tape[dp] != 0)
-            {
-                pc = match[pc] + 1;
-            }
-            else
-            {
-                pc++;
-            }
-            break;
-        default:
-            pc++;
-            break;
+            case IR_HALT:
+                return;
         }
     }
 }
 
-int main()
+int main(int argc, char** argv)
 {
-    const char multiply_loop[] = "++++++++[>+++++++++<-]>.";
-    const char hello_world[] = "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.";
-    Instruction instructions[MAX_PROGRAM_LENGTH];
-    int instruction_count = compress(multiply_loop, instructions, MAX_PROGRAM_LENGTH);
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <filename.bf>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
 
-    if (instruction_count < 0)
-    {
-        printf("Error: compressed program too long\n");
+    FILE* file = fopen(argv[1], "rb");
+    if (!file) {
+        perror("Error opening file");
+        return EXIT_FAILURE;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    rewind(file);
+
+    char* source_code = malloc(file_size + 1);
+    if (!source_code) {
+        fprintf(stderr, "Memory allocation failed\n");
+        fclose(file);
+        return EXIT_FAILURE;
+    }
+
+    size_t read_size = fread(source_code, 1, file_size, file);
+    source_code[read_size] = '\0';
+    fclose(file);
+
+    instruction_t* prog = compile_ir(source_code);
+    free(source_code);
+
+    if (!prog) {
         return 1;
     }
 
-    #if PRINT_IR
-        print_instructions(instructions, instruction_count);
-        printf("\n");
-    #endif
-
-    run(multiply_loop);
+#if DEBUG_TRACE_ENABLED
+    print_instructions(prog);
     printf("\n");
-    run(hello_world);
+#endif
+
+    run_vm(prog);
+
+    free(prog);
 
     return 0;
 }

@@ -3,8 +3,11 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define TAPE_SIZE 30000
+#define TAPE_SIZE (1024 * 1024)
 #define DEBUG_TRACE_ENABLED 0 // Disabled by default for normal CLI usage
+
+#define MAX_OFFSETS 2048
+#define OFFSET_CENTER 1024
 
 typedef enum {
     IR_ADD,
@@ -14,12 +17,15 @@ typedef enum {
     IR_JZ,
     IR_JNZ,
     IR_CLEAR,
+    IR_MUL,
+    IR_NOP,
     IR_HALT
 } ir_opcode_t;
 
 typedef struct {
     ir_opcode_t opcode;
     int operand;
+    int offset;
 } instruction_t;
 
 void print_instructions(const instruction_t* instructions)
@@ -32,12 +38,14 @@ void print_instructions(const instruction_t* instructions)
         "JZ",
         "JNZ",
         "CLEAR",
+        "MUL",
+        "NOP",
         "HALT"
     };
 
     int i = 0;
     while (instructions[i].opcode != IR_HALT) {
-        printf("%04d: %-5s %d\n", i, opcode_names[instructions[i].opcode], instructions[i].operand);
+        printf("%04d: %-5s %d (offset: %d)\n", i, opcode_names[instructions[i].opcode], instructions[i].operand, instructions[i].offset);
         i++;
     }
     printf("%04d: HALT\n", i);
@@ -75,6 +83,7 @@ instruction_t* compile_ir(const char* source_code)
 
                 instructions[inst_index].opcode = (current_char == '+' || current_char == '-') ? IR_ADD : IR_MOVE;
                 instructions[inst_index].operand = amount;
+                instructions[inst_index].offset = 0;
                 inst_index++;
                 break;
             }
@@ -83,6 +92,7 @@ instruction_t* compile_ir(const char* source_code)
             case ',':
                 instructions[inst_index].opcode = (current_char == '.') ? IR_PUT : IR_GET;
                 instructions[inst_index].operand = 0;
+                instructions[inst_index].offset = 0;
                 inst_index++;
                 i++;
                 break;
@@ -92,6 +102,7 @@ instruction_t* compile_ir(const char* source_code)
                 if (source_code[i + 1] == '-' && source_code[i + 2] == ']') {
                     instructions[inst_index].opcode = IR_CLEAR;
                     instructions[inst_index].operand = 0;
+                    instructions[inst_index].offset = 0;
                     inst_index++;
                     i += 3;
                     break;
@@ -100,6 +111,7 @@ instruction_t* compile_ir(const char* source_code)
                 bracket_stack[stack_depth++] = inst_index;
                 instructions[inst_index].opcode = IR_JZ;
                 instructions[inst_index].operand = -1; // Placeholder for destination
+                instructions[inst_index].offset = 0;
                 inst_index++;
                 i++;
                 break;
@@ -117,13 +129,14 @@ instruction_t* compile_ir(const char* source_code)
 
                 instructions[inst_index].opcode = IR_JNZ;
                 instructions[inst_index].operand = open_index + 1;
+                instructions[inst_index].offset = 0;
                 inst_index++;
                 i++;
                 break;
             }
 
             default:
-                // Ignore comments and other unknown characters
+                // Ignore other unknown characters
                 i++;
                 break;
         }
@@ -139,14 +152,79 @@ instruction_t* compile_ir(const char* source_code)
 
     instructions[inst_index].opcode = IR_HALT;
     instructions[inst_index].operand = 0;
+    instructions[inst_index].offset = 0;
 
     return instructions;
 }
 
+void optimize_muls(instruction_t* prog) {
+    int i = 0;
+    
+    while (prog[i].opcode != IR_HALT) {
+        if (prog[i].opcode == IR_JZ) {
+            int loop_start = i;
+            int jnz_index = prog[i].operand - 1; 
+            
+            if (jnz_index >= 0 && prog[jnz_index].opcode == IR_JNZ) {
+                int is_simple_loop = 1;
+                int current_offset = 0;
+                int changes[MAX_OFFSETS] = {0};
+
+                for (int j = loop_start + 1; j < jnz_index; j++) {
+                    if (prog[j].opcode == IR_MOVE) {
+                        current_offset += prog[j].operand;
+                    } 
+                    else if (prog[j].opcode == IR_ADD) {
+                        int pos = OFFSET_CENTER + current_offset;
+                        if (pos >= 0 && pos < MAX_OFFSETS) {
+                            changes[pos] += prog[j].operand;
+                        } else {
+                            is_simple_loop = 0; break; 
+                        }
+                    } 
+                    else if (prog[j].opcode == IR_NOP) {
+                        continue;
+                    } 
+                    else {
+                        is_simple_loop = 0; break; 
+                    }
+                }
+
+                if (is_simple_loop && current_offset == 0 && changes[OFFSET_CENTER] == -1) {
+                    int rewrite_index = loop_start;
+                    
+                    for (int j = 0; j < MAX_OFFSETS; j++) {
+                        if (j != OFFSET_CENTER && changes[j] != 0) {
+                            prog[rewrite_index].opcode = IR_MUL;
+                            prog[rewrite_index].operand = changes[j];
+                            prog[rewrite_index].offset = j - OFFSET_CENTER;
+                            rewrite_index++;
+                        }
+                    }
+                    
+                    prog[rewrite_index].opcode = IR_CLEAR;
+                    prog[rewrite_index].operand = 0;
+                    prog[rewrite_index].offset = 0;
+                    rewrite_index++;
+
+                    for (int j = rewrite_index; j <= jnz_index; j++) {
+                        prog[j].opcode = IR_NOP;
+                    }
+                }
+            }
+        }
+        i++;
+    }
+}
+
 void run_vm(const instruction_t* instructions)
 {
-    uint8_t tape[TAPE_SIZE] = { 0 };
-    int data_pointer = 0;
+    uint8_t* tape = calloc(TAPE_SIZE, 1);
+    if (!tape) {
+        fprintf(stderr, "Failed to allocate tape\n");
+        return;
+    }
+    int data_pointer = TAPE_SIZE / 2; // Start in the middle to prevent easy underflow
     int program_counter = 0;
 
     while (1) {
@@ -154,19 +232,14 @@ void run_vm(const instruction_t* instructions)
 
         switch (inst.opcode) {
             case IR_ADD:
-                tape[data_pointer] = (uint8_t)(tape[data_pointer] + inst.operand);
+                tape[data_pointer] += (uint8_t)inst.operand;
                 program_counter++;
                 break;
 
-            case IR_MOVE: {
-                int new_dp = (data_pointer + inst.operand) % TAPE_SIZE;
-                if (new_dp < 0) {
-                    new_dp += TAPE_SIZE;
-                }
-                data_pointer = new_dp;
+            case IR_MOVE:
+                data_pointer += inst.operand;
                 program_counter++;
                 break;
-            }
 
             case IR_PUT:
                 putchar(tape[data_pointer]);
@@ -195,7 +268,17 @@ void run_vm(const instruction_t* instructions)
                 program_counter++;
                 break;
 
+            case IR_MUL:
+                tape[data_pointer + inst.offset] += tape[data_pointer] * inst.operand;
+                program_counter++;
+                break;
+
+            case IR_NOP:
+                program_counter++;
+                break;
+
             case IR_HALT:
+                free(tape);
                 return;
         }
     }
@@ -233,8 +316,10 @@ int main(int argc, char** argv)
     free(source_code);
 
     if (!prog) {
-        return 1;
+        return EXIT_FAILURE;
     }
+
+    optimize_muls(prog);
 
 #if DEBUG_TRACE_ENABLED
     print_instructions(prog);
@@ -245,5 +330,5 @@ int main(int argc, char** argv)
 
     free(prog);
 
-    return 0;
+    return EXIT_SUCCESS;
 }

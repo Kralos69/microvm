@@ -1,92 +1,42 @@
-# MicroVM
+# MicroVm: Brainfuck Optimizations 🚀
 
-MicroVM is a self-guided path for learning how computers work by building a tiny virtual machine, then gradually turning it into a [brainfuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter.
+This branch (`optimizations`) transforms our naive Brainfuck interpreter into a highly optimized, bytecode-driven Virtual Machine. By adding an Intermediate Representation (IR) and a Peephole Optimizer, execution time for complex programs (like a Mandelbrot fractal generator) is significantly reduced.
 
-The goal is not to memorize brainfuck. The goal is to understand the pieces underneath it:
+## What Was Done
 
-- instruction fetch/decode/execute
-- program counters
-- stacks
-- control flow
-- memory/tape models
-- parsing source code into executable behavior
+1. **Intermediate Representation (IR):** The raw Brainfuck characters are no longer interpreted at runtime. The source is pre-compiled into a flat array of structures (`instruction_t`) called IR or bytecodes. 
+2. **Infinite Tape:** The memory tape was expanded to a 1 Megabyte heap allocation. More importantly, we removed bounds checking (`% TAPE_SIZE`) during pointer movement (`IR_MOVE`). If a program misbehaves, it crashes, but correct programs run at maximum CPU speed.
+3. **Peephole Optimizer:** A secondary pass over the compiled IR detects common, slow Brainfuck patterns and replaces them with dedicated, lightning-fast instructions.
 
-Each level is a small extension of the previous one.
+---
 
-## Prerequisites
+## How It Works (With Examples)
 
-You should have a basic programming environment available:
+### 1. Run-Length Encoding (RLE)
+In naive Brainfuck, moving the pointer 5 times to the right (`>>>>>`) requires 5 iterations of the execution loop. 
+During our IR compilation, contiguous identical instructions are folded into a single instruction with an operand.
 
-- a text editor or IDE
-- a terminal/shell
-- a compiler or runtime for the language you want to use
-- if following the examples directly, a C environment with `stdint.h`, `uint8_t`, `putchar()`, and `getchar()`
+* **Raw:** `>>>>>`
+* **IR:** `IR_MOVE (operand: 5)`
 
-A little experience with variables, arrays, loops, and functions is helpful. You do not need to know how virtual machines or interpreters work yet.
+### 2. Loop Clearing (`IR_CLEAR`)
+Brainfuck programs frequently clear a cell (set it to 0) using a simple loop: `[-]`. Naively, this decrements the cell by 1 until it hits 0, which is extremely slow for large numbers.
+Our compiler recognizes this exact character sequence and translates it into a direct memory zeroing operation.
 
-The examples are written in C-style byte arrays, but the project can be implemented in any language that lets you work with numbers, arrays, and characters.
+* **Raw:** `[-]`
+* **IR:** `IR_CLEAR`
+* **C execution:** `tape[data_pointer] = 0;`
 
-## How to use this project
+### 3. Multiplication Loops (`IR_MUL`)
+The most significant optimization. Brainfuck lacks native math, so adding 3 to an adjacent cell looks like this: `[->+++<]`. This means: *subtract 1 here, move right, add 3, move left, repeat until 0.*
 
-Work through the levels in order:
+Our Peephole Optimizer simulates loops. If it finds a loop that only moves the pointer, adds/subtracts values, always returns the pointer to its starting position (`offset: 0`), and decrements the original cell by exactly 1... it converts it into native multiplications!
 
-1. Read the level document.
-2. Implement or extend your VM.
-3. Run the test programs.
-4. If something breaks, trace the VM by hand: write down `pc`, stack/tape contents, and output after each instruction.
-5. Move on only when the current level works.
+* **Raw:** `[->+++<]`
+* **IR:** 
+  * `IR_MUL (operand: 3, offset: 1)`
+  * `IR_CLEAR`
+  * `IR_NOP` (padding)
 
-Starter files, build commands, and a complete example setup will be added later.
-
-## Levels
-
-| Level | File | Main idea |
-|-------|------|-----------|
-| 1 | `level1.md` | Fetch/decode/execute loop and a program counter |
-| 2 | `level2.md` | Stack operations and arithmetic |
-| 3 | `level3.md` | Jumps, conditionals, and loops |
-| 4 | `level4.md` | Brainfuck-style tape memory |
-| 5 | `level5.md` | Brainfuck source parsing and bracket matching |
-
-## Expected outputs
-
-Use these as quick checks:
-
-| Level | Program | Expected output |
-|-------|---------|-----------------|
-| 1 | Hello program | `Hello, World!` |
-| 2 | Stack print program | `Hi` |
-| 2 | ADD program | `C` |
-| 3 | Infinite loop program | prints `A` forever |
-| 3 | Counter loop challenge | `AAA` |
-| 4 | 72 `INC`s | `H` |
-| 4 | Multiply loop | `H` |
-| 5 | Simple 72-plus brainfuck program | `H` |
-| 5 | Real brainfuck multiply loop | `H` |
-| 5 | Real brainfuck Hello World program | `Hello World!\n` |
-
-## Suggested VM behavior
-
-For a learning project, it is useful to make errors loud instead of mysterious.
-
-Consider checking for:
-
-- invalid opcodes
-- stack overflow or underflow
-- tape pointer moving before cell `0` or beyond the end of the tape
-- jumps to invalid program positions
-- programs that never halt
-- unmatched `[` or `]` in brainfuck source
-- `getchar()` returning end-of-file
-
-The levels use `uint8_t` values, so arithmetic should wrap: `255 + 1` becomes `0`, and `0 - 1` becomes `255`.
-
-## Debugging tip
-
-Add an optional trace mode that prints the VM state before or after every instruction, for example:
-
-```text
-pc=8 op=JUMP_IF_ZERO dp=0 tape[0]=8 tape[1]=0 output=""
-```
-
-This makes bugs in jump targets, stack order, and tape movement much easier to see.
+By embedding the relative distance (`offset`) into the `IR_MUL` instruction, the VM can use native base+offset addressing without actually moving its internal pointer back and forth. 
+* **C execution:** `tape[data_pointer + inst.offset] += tape[data_pointer] * inst.operand;`
